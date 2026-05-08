@@ -1,104 +1,135 @@
 """
-3D Interactive XCT Volume Visualiser with Defect Highlighting
+=============================================================================
+3D Interactive XCT Volume Visualiser
+– Translucent Air–Solid Surface + Defect Points
+=============================================================================
 Run from project root:
     python visualize.py
+=============================================================================
 """
 
 import os
+import glob
 import numpy as np
 import tifffile as tiff
-import glob
 import plotly.graph_objects as go
 
-# ── Config ─────────────────────────────────────────────────────────────────
-VOLUME_DIR = r"data\tiff_output"       # preprocessed slices
-MASK_DIR   = r"data\tiff_masks"        # pseudo-label masks (if available)
-DOWNSAMPLE = 4                         # reduce resolution for speed (2, 4, or 8)
+from skimage.filters import threshold_otsu
+from scipy.ndimage import gaussian_filter, binary_erosion
 
-# ── Load volume ─────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────
+VOLUME_DIR = r"data\tiff_output"   # preprocessed TIFF slices
+DOWNSAMPLE = 4                     # for visualization ONLY (2, 4, or 8)
+MAX_POINTS = 50_000                # max defect points to render
+
+# ── Utilities ─────────────────────────────────────────────────────────────
 def load_stack(folder):
     files = sorted(glob.glob(os.path.join(folder, "*.tif")))
-    return np.stack([tiff.imread(f) for f in files], axis=0)
+    if not files:
+        raise RuntimeError(f"No TIFF files found in {folder}")
+    return np.stack([tiff.imread(f).astype(np.float32) for f in files], axis=0)
 
-print("Loading preprocessed volume ...")
-volume = load_stack(VOLUME_DIR)
-print(f"  Volume shape: {volume.shape}")
 
-# Downsample for performance
-volume = volume[::DOWNSAMPLE, ::DOWNSAMPLE, ::DOWNSAMPLE]
-print(f"  Downsampled to: {volume.shape}")
+# ── Load volume (FULL resolution first) ───────────────────────────────────
+print("Loading TIFF stack (full resolution) ...")
+volume_full = load_stack(VOLUME_DIR)
+print(f"  Volume shape: {volume_full.shape}")
 
-# ── Load or generate mask ───────────────────────────────────────────────────
-if os.path.isdir(MASK_DIR) and glob.glob(os.path.join(MASK_DIR, "*.tif")):
-    print("Loading pseudo-label masks ...")
-    mask = load_stack(MASK_DIR)
-    mask = mask[::DOWNSAMPLE, ::DOWNSAMPLE, ::DOWNSAMPLE]
-else:
-    print("No masks found — generating Otsu threshold mask ...")
-    from skimage.filters import threshold_otsu
-    thresh = threshold_otsu(volume)
-    mask   = (volume < thresh).astype(np.uint8)   # defects = dark voxels
+# Optional light smoothing (helps boundary stability)
+volume_smooth = gaussian_filter(volume_full, sigma=0.5)
 
-# ── Get defect voxel coordinates ────────────────────────────────────────────
-print("Extracting defect coordinates ...")
-z, y, x = np.where(mask > 0)
+# ── Thresholding (FULL resolution) ────────────────────────────────────────
+print("Computing global Otsu threshold ...")
+thresh = threshold_otsu(volume_smooth)
+print(f"  Otsu threshold = {thresh:.4f}")
 
-# Subsample points for performance (max 50k points)
-max_pts = 50_000
-if len(z) > max_pts:
-    idx = np.random.choice(len(z), max_pts, replace=False)
+# Air mask (XCT: air = darker)
+air_mask = volume_smooth < thresh
+
+# Extract only the air–solid INTERFACE
+print("Extracting air–solid boundary ...")
+boundary_mask = air_mask ^ binary_erosion(air_mask)
+
+# ── Downsample for visualization ──────────────────────────────────────────
+print(f"Downsampling by factor {DOWNSAMPLE} for visualization ...")
+
+volume = volume_smooth[
+    ::DOWNSAMPLE, ::DOWNSAMPLE, ::DOWNSAMPLE
+]
+
+boundary_mask = boundary_mask[
+    ::DOWNSAMPLE, ::DOWNSAMPLE, ::DOWNSAMPLE
+]
+
+print(f"  Downsampled volume shape: {volume.shape}")
+
+# ── Extract boundary points ───────────────────────────────────────────────
+z, y, x = np.where(boundary_mask)
+
+# Subsample for performance
+if len(z) > MAX_POINTS:
+    idx = np.random.choice(len(z), MAX_POINTS, replace=False)
     z, y, x = z[idx], y[idx], x[idx]
 
-print(f"  Defect voxels to render: {len(z):,}")
+print(f"  Boundary points to render: {len(z):,}")
 
-# ── Build figure ─────────────────────────────────────────────────────────────
+# ── Build visualization ───────────────────────────────────────────────────
 print("Building 3D visualisation ...")
 
 fig = go.Figure()
 
-# Volume outline box
-D, H, W = volume.shape
-fig.add_trace(go.Scatter3d(
-    x=[0, W, W, 0, 0, 0, W, W, 0, 0, W, W, W, W, 0, 0],
-    y=[0, 0, H, H, 0, 0, 0, H, H, 0, 0, 0, H, H, H, H],
-    z=[0, 0, 0, 0, 0, D, D, D, D, D, D, 0, 0, D, D, 0],
-    mode="lines",
-    line=dict(color="lightgrey", width=2),
-    name="Volume boundary"
+# ── Translucent air–solid surface ─────────────────────────────────────────
+fig.add_trace(go.Isosurface(
+    value=volume,
+    isomin=thresh * 0.98,
+    isomax=thresh * 1.02,
+    surface_count=1,
+    opacity=0.25,                        # translucent
+    colorscale="Gray",
+    caps=dict(x_show=False, y_show=False, z_show=False),
+    showscale=False,
+    name="Air–Solid Interface"
 ))
 
-# Defect points
+# ── Boundary / defect points ──────────────────────────────────────────────
 fig.add_trace(go.Scatter3d(
     x=x, y=y, z=z,
     mode="markers",
     marker=dict(
-        size=1.5,
-        color=z,                        # colour by depth
+        size=2,
+        color=z,                        # depth colouring
         colorscale="Reds",
-        opacity=0.4,
-        colorbar=dict(title="Depth (slice)")
+        opacity=0.85
     ),
-    name="Defects"
+    name="Boundary / Defects"
 ))
 
+# ── Lighting & layout ─────────────────────────────────────────────────────
+fig.update_traces(
+    selector=dict(type="isosurface"),
+    lighting=dict(
+        ambient=0.5,
+        diffuse=0.7,
+        specular=0.2,
+        roughness=0.9
+    )
+)
+
 fig.update_layout(
-    title="XCT Volume — Defect Map (Interactive 3D)",
+    title="XCT Volume — Translucent Air–Solid Surface with Boundary Points",
     scene=dict(
-        xaxis_title="X (px)",
-        yaxis_title="Y (px)",
-        zaxis_title="Slice",
         bgcolor="black",
-        xaxis=dict(showgrid=False),
-        yaxis=dict(showgrid=False),
-        zaxis=dict(showgrid=False),
+        xaxis=dict(showgrid=False, zeroline=False, title="X"),
+        yaxis=dict(showgrid=False, zeroline=False, title="Y"),
+        zaxis=dict(showgrid=False, zeroline=False, title="Slice"),
     ),
     paper_bgcolor="black",
     font_color="white",
     legend=dict(bgcolor="black")
 )
 
-# ── Save and open ─────────────────────────────────────────────────────────────
-out = "defect_map_3d.html"
-fig.write_html(out)
-print(f"\n  Saved → '{out}'")
-print("  Open it in your browser to interact with the 3D model.")
+# ── Save output ───────────────────────────────────────────────────────────
+out_file = "xct_surface_with_points.html"
+fig.write_html(out_file)
+print(f"\nSaved → {out_file}")
+print("Open it in a browser to interact with the 3D model.")
