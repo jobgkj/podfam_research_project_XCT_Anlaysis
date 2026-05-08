@@ -33,7 +33,7 @@ sys.path.insert(0, ROOT)
 #       from src.data_loader import load_tiff_stack, full_preprocess
 #
 # Change the line below to match your actual folder structure:
-from data_loader import load_tiff_stack, full_preprocess   # ← adjust if needed
+from loader import load_tiff_stack, full_preprocess   # ← adjust if needed
 
 
 def save_volume(volume: np.ndarray, output_folder: str) -> None:
