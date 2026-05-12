@@ -1,23 +1,29 @@
 """
+=============================================================================
 metrics.py — Validation and quantitative analysis of XCT defect masks
+=============================================================================
 
-This module validates binary defect masks and computes slice-wise
-quantitative metrics for X-ray Computed Tomography (XCT) data.
+Mask convention
+---------------
+    1 = pore / defect  (foreground)
+    0 = solid material (background)
 
-Mask convention:
-- 1 = solid material (including outside the sample)
-- 0 = pore / defect (inside the sample only)
+This matches the output of otsu(), yen(), and bernsen() in thresholding.py,
+and the uint8 masks saved by io.py (values 0 or 1, NOT 0 or 255).
 
 All operations are 2D and slice-wise.
+=============================================================================
 """
 
 import numpy as np
 from skimage.measure import label, regionprops
 
+import config
 
-# ============================================================================
-# Validation utilities
-# ============================================================================
+
+# =============================================================================
+# Validation
+# =============================================================================
 
 def validate_mask(mask: np.ndarray) -> None:
     """
@@ -26,138 +32,216 @@ def validate_mask(mask: np.ndarray) -> None:
     Parameters
     ----------
     mask : np.ndarray
-        Binary uint8 mask.
+        Binary uint8 mask. Values must be 0 or 1.
 
     Raises
     ------
-    ValueError or TypeError on invalid input.
+    TypeError
+        If mask is not a NumPy array or not uint8.
+    ValueError
+        If mask is not 2D or not binary (0/1).
     """
     if not isinstance(mask, np.ndarray):
-        raise TypeError("Mask must be a NumPy array")
+        raise TypeError("Mask must be a NumPy array.")
 
     if mask.ndim != 2:
-        raise ValueError(f"Mask must be 2D, got shape {mask.shape}")
+        raise ValueError(f"Mask must be 2D, got shape {mask.shape}.")
 
     if mask.dtype != np.uint8:
-        raise TypeError("Mask must be of type uint8")
+        raise TypeError(
+            f"Mask must be dtype uint8, got {mask.dtype}."
+        )
 
     unique_vals = np.unique(mask)
     if not set(unique_vals).issubset({0, 1}):
+        hint = (
+            " Mask contains 0/255 — did you forget to divide by 255?"
+            if set(unique_vals).issubset({0, 255})
+            else ""
+        )
         raise ValueError(
-            f"Mask must be binary (0/1), got values {unique_vals}"
+            f"Mask must be binary (0/1), got values {unique_vals}.{hint}"
         )
 
 
-# ============================================================================
-# Global slice-wise metrics
-# ============================================================================
+# =============================================================================
+# Internal helpers (no validation — called only after validate_mask)
+# =============================================================================
+
+def _porosity(mask: np.ndarray) -> float:
+    """
+    Compute raw porosity without validation.
+
+    Porosity = pore pixels (1) / total pixels.
+
+    Note: counts ALL pore pixels regardless of min_area.
+    This is intentional — porosity is a global area fraction,
+    not a filtered pore count.
+    """
+    return float(np.count_nonzero(mask == 1) / mask.size)
+
+
+def _labeled_regions(mask: np.ndarray, min_area: int):
+    """
+    Return regionprops for connected pore components >= min_area.
+    Shared by pore_count, pore_properties, and summarize_slice
+    to avoid recomputing label() multiple times.
+    """
+    labeled = label(mask == 1)
+    return [r for r in regionprops(labeled) if r.area >= min_area]
+
+
+# =============================================================================
+# Public — global slice metrics
+# =============================================================================
 
 def porosity(mask: np.ndarray) -> float:
     """
     Compute porosity for a 2D slice.
 
-    Porosity is defined as:
-        pore pixels / total pixels
+    Porosity = pore pixels / total pixels.
 
-    Note:
-    Outside-sample pixels must already be set to solid (1).
+    Note: all pore pixels are counted regardless of min_area.
     """
     validate_mask(mask)
-
-    pore_pixels = np.count_nonzero(mask == 0)
-    total_pixels = mask.size
-
-    return pore_pixels / total_pixels
+    return _porosity(mask)
 
 
-def pore_count(mask: np.ndarray, min_area: int = 1) -> int:
+def pore_count(mask: np.ndarray, min_area: int = None) -> int:
     """
-    Count the number of pores (connected components).
+    Count connected pore components >= min_area pixels.
 
     Parameters
     ----------
     mask : np.ndarray
-        Binary mask (1 = solid, 0 = pore)
-    min_area : int
-        Minimum pore area (in pixels) to be counted
+        Binary uint8 mask (1 = pore, 0 = solid).
+    min_area : int, optional
+        Minimum pore size in pixels.
+        Defaults to config.MIN_DEFECT_SIZE.
     """
-    validate_mask(mask)
+    if min_area is None:
+        min_area = config.MIN_DEFECT_SIZE
 
     if min_area <= 0:
-        raise ValueError("min_area must be positive")
+        raise ValueError("min_area must be positive.")
 
-    labeled = label(mask == 0)
-
-    return sum(
-        1 for region in regionprops(labeled)
-        if region.area >= min_area
-    )
+    validate_mask(mask)
+    return len(_labeled_regions(mask, min_area))
 
 
-# ============================================================================
-# Pore-level statistics
-# ============================================================================
+# =============================================================================
+# Public — pore-level properties
+# =============================================================================
 
-def pore_properties(mask: np.ndarray, min_area: int = 1) -> dict:
+def pore_properties(mask: np.ndarray, min_area: int = None) -> dict:
     """
-    Extract pore-level properties from a 2D slice.
+    Extract per-pore properties from a 2D slice.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Binary uint8 mask (1 = pore, 0 = solid).
+    min_area : int, optional
+        Minimum pore size in pixels.
+        Defaults to config.MIN_DEFECT_SIZE.
 
     Returns
     -------
     dict
         {
-            'areas': np.ndarray,
-            'equivalent_diameters': np.ndarray
+            'areas'                 : np.ndarray (float32),
+            'equivalent_diameters'  : np.ndarray (float32),
+            'areas_um2'             : np.ndarray (float32),  # physical units
+            'equivalent_diameters_um': np.ndarray (float32), # physical units
         }
     """
-    validate_mask(mask)
+    if min_area is None:
+        min_area = config.MIN_DEFECT_SIZE
 
     if min_area <= 0:
-        raise ValueError("min_area must be positive")
+        raise ValueError("min_area must be positive.")
 
-    labeled = label(mask == 0)
+    validate_mask(mask)
 
-    areas = []
-    equiv_diams = []
+    regions = _labeled_regions(mask, min_area)
 
-    for region in regionprops(labeled):
-        if region.area >= min_area:
-            areas.append(region.area)
-            equiv_diams.append(region.equivalent_diameter)
+    areas       = np.array([r.area                  for r in regions], dtype=np.float32)
+    equiv_diams = np.array([r.equivalent_diameter   for r in regions], dtype=np.float32)
+
+    px = config.PIXEL_SIZE_UM
 
     return {
-        "areas": np.array(areas, dtype=np.float32),
-        "equivalent_diameters": np.array(equiv_diams, dtype=np.float32),
+        "areas":                    areas,
+        "equivalent_diameters":     equiv_diams,
+        "areas_um2":                areas       * px ** 2,
+        "equivalent_diameters_um":  equiv_diams * px,
     }
 
 
-# ============================================================================
-# Slice summary (most commonly used entry point)
-# ============================================================================
+# =============================================================================
+# Public — slice summary (main entry point for pipeline)
+# =============================================================================
 
-def summarize_slice(mask: np.ndarray, min_area: int = 1) -> dict:
+def summarize_slice(
+    mask:          np.ndarray,
+    min_area:      int   = None,
+    pixel_size_um: float = None,
+) -> dict:
     """
     Compute summary statistics for a single XCT slice.
+
+    Parameters
+    ----------
+    mask : np.ndarray
+        Binary uint8 mask (1 = pore, 0 = solid).
+    min_area : int, optional
+        Minimum pore size in pixels to include in stats.
+        Defaults to config.MIN_DEFECT_SIZE.
+    pixel_size_um : float, optional
+        Physical pixel size in micrometres.
+        Defaults to config.PIXEL_SIZE_UM.
 
     Returns
     -------
     dict
         {
-            'porosity': float,
-            'pore_count': int,
-            'mean_pore_area': float,
-            'mean_equivalent_diameter': float
+            'porosity'                  : float  — all pore pixels / total pixels
+            'pore_count'                : int    — pores >= min_area
+            'mean_pore_area_px'         : float  — mean pore area (pixels)
+            'mean_pore_area_um2'        : float  — mean pore area (µm²)
+            'mean_equivalent_diameter_px': float — mean equiv. diameter (pixels)
+            'mean_equivalent_diameter_um': float — mean equiv. diameter (µm)
         }
+
+    Note
+    ----
+    porosity counts ALL pore pixels regardless of min_area.
+    pore_count and size statistics only include pores >= min_area pixels.
+    These are intentionally different — porosity is a global area fraction.
     """
-    props = pore_properties(mask, min_area=min_area)
+    if min_area is None:
+        min_area = config.MIN_DEFECT_SIZE
+
+    if pixel_size_um is None:
+        pixel_size_um = config.PIXEL_SIZE_UM
+
+    # Validate once — internal helpers skip re-validation
+    validate_mask(mask)
+
+    regions = _labeled_regions(mask, min_area)
+
+    areas       = np.array([r.area                for r in regions], dtype=np.float32)
+    equiv_diams = np.array([r.equivalent_diameter for r in regions], dtype=np.float32)
+
+    has_pores = areas.size > 0
 
     return {
-        "porosity": porosity(mask),
-        "pore_count": props["areas"].size,
-        "mean_pore_area":
-            float(np.mean(props["areas"]))
-            if props["areas"].size > 0 else 0.0,
-        "mean_equivalent_diameter":
-            float(np.mean(props["equivalent_diameters"]))
-            if props["equivalent_diameters"].size > 0 else 0.0,
+        "porosity":                     _porosity(mask),
+        "pore_count":                   areas.size,
+        "mean_pore_area_px":            float(np.mean(areas))       if has_pores else 0.0,
+        "mean_pore_area_um2":           float(np.mean(areas))       * pixel_size_um ** 2
+                                        if has_pores else 0.0,
+        "mean_equivalent_diameter_px":  float(np.mean(equiv_diams)) if has_pores else 0.0,
+        "mean_equivalent_diameter_um":  float(np.mean(equiv_diams)) * pixel_size_um
+                                        if has_pores else 0.0,
     }
