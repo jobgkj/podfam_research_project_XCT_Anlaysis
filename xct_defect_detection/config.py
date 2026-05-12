@@ -19,10 +19,11 @@ REPO_ROOT = Path(__file__).resolve().parent
 # Sample
 # =============================================================================
 
-# Auto-discover all sample folders under data/raw/
-# Override by setting SAMPLE_NAMES = ["sample_01"] for a specific subset
-SAMPLE_NAME  = "sample_01"   # default single sample (used by io.py / run_pipeline.py)
-SAMPLE_NAMES = sorted([        # all samples (auto-discovered at import time)
+# Default single sample — used by io.py / run_pipeline.py
+SAMPLE_NAME = "sample_01"
+
+# All samples — auto-discovered at import time
+SAMPLE_NAMES = sorted([
     d.name for d in (REPO_ROOT / "data" / "raw").iterdir()
     if d.is_dir()
 ]) if (REPO_ROOT / "data" / "raw").exists() else []
@@ -39,9 +40,9 @@ MASKS_DIR          = REPO_ROOT / "data" / "masks"
 # Results directories
 # =============================================================================
 
-CKPT_DIR     = REPO_ROOT / "artifacts"
-FIGURES_DIR  = REPO_ROOT / "results" / "figures"
-METRICS_DIR  = REPO_ROOT / "results" / "metrics"
+CKPT_DIR    = REPO_ROOT / "artifacts"
+FIGURES_DIR = REPO_ROOT / "results" / "figures"
+METRICS_DIR = REPO_ROOT / "results" / "metrics"
 
 # =============================================================================
 # Directory creation — call explicitly at pipeline startup
@@ -84,16 +85,38 @@ RING_FILTER_RADIUS   = 15
 # Thresholding
 # =============================================================================
 
-BERNSEN_RADIUS               = 5
-BERNSEN_DCT                  = 15
-BERNSEN_LOW_CONTRAST_THRESH  = 128
+BERNSEN_RADIUS              = 5      # local window radius in pixels (Kim et al. 2017)
+BERNSEN_LOW_CONTRAST_THRESH = 128    # fixed threshold for low-contrast regions
+
+# ------------------------------------------------------------------
+# Auto-DCT computation (Kim et al. 2017 method)
+# ------------------------------------------------------------------
+# DCT is computed per image as:
+#     DCT = BERNSEN_DCT_STD_MULTIPLIER × mean(local std of solid phase)
+#
+# The paper measured avg std = 0.847 for Sample 2 after NLM filtering,
+# giving DCT = 18 × 0.847 ≈ 15.
+# For noisier images the std will be higher → higher DCT → less over-segmentation.
+#
+# Set BERNSEN_DCT_AUTO = False and adjust BERNSEN_DCT to use a fixed value.
+# ------------------------------------------------------------------
+
+BERNSEN_DCT_AUTO           = True   # True = compute per image (recommended)
+BERNSEN_DCT_STD_MULTIPLIER = 18     # from Kim et al. 2017 (18× avg std)
+BERNSEN_DCT_N_LOCATIONS    = 5      # grid points per axis for std sampling
+BERNSEN_DCT_WINDOW_RADIUS  = 5      # local window radius for std measurement
+BERNSEN_DCT_MIN            = 5      # minimum DCT floor (prevents under-segmentation)
+
+# Fallback fixed DCT — only used when BERNSEN_DCT_AUTO = False
+# Raised from 15 → 30 to reduce over-segmentation on low-porosity samples
+BERNSEN_DCT                = 30
 
 # =============================================================================
 # Metrics
 # =============================================================================
 
-PIXEL_SIZE_UM   = 1.0    # µm per pixel — update with your scanner's voxel size
-MIN_DEFECT_SIZE = 5      # minimum pore area in pixels
+PIXEL_SIZE_UM   = 1.0   # µm per pixel — update with your scanner's voxel size
+MIN_DEFECT_SIZE = 5     # minimum pore area in pixels
 
 # =============================================================================
 # Pseudo-label generation

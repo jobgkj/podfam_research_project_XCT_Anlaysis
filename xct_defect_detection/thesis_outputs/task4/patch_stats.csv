@@ -1,0 +1,11 @@
+sample,slice,patch_size,patch_count,stride
+sample_01,set1sample2raw_0450,64,792,32
+sample_01,set1sample2raw_0450,128,193,64
+sample_02,set1sample3raw_0450,64,788,32
+sample_02,set1sample3raw_0450,128,193,64
+sample_03,set1sample4raw_0450,64,790,32
+sample_03,set1sample4raw_0450,128,193,64
+sample_04,set1sample5raw_0374,64,791,32
+sample_04,set1sample5raw_0374,128,193,64
+sample_05,set1sample6raw_0450,64,792,32
+sample_05,set1sample6raw_0450,128,194,64
