@@ -1,80 +1,109 @@
 """
 =============================================================================
 3D Interactive XCT Volume Visualiser
-– Translucent Air–Solid Surface + Defect Points
+— Translucent Air–Solid Surface + Defect Points
 =============================================================================
 Run from project root:
-    python visualize.py
+    python scripts/visualize_3d_xct.py
 =============================================================================
 """
 
-import os
-import glob
+from pathlib import Path
 import numpy as np
 import tifffile as tiff
 import plotly.graph_objects as go
 
-from skimage.filters import threshold_otsu
 from scipy.ndimage import gaussian_filter, binary_erosion
+from src.thresholding import otsu
+import config
 
-# ── Config ────────────────────────────────────────────────────────────────
-VOLUME_DIR = r"data\tiff_output"   # preprocessed TIFF slices
-DOWNSAMPLE = 4                     # for visualization ONLY (2, 4, or 8)
-MAX_POINTS = 50_000                # max defect points to render
 
-# ── Utilities ─────────────────────────────────────────────────────────────
-def load_stack(folder):
-    files = sorted(glob.glob(os.path.join(folder, "*.tif")))
+# ---------------------------------------------------------------------------
+# CONFIGURATION (visualisation only)
+# ---------------------------------------------------------------------------
+
+# Use preprocessed slices (uint8)
+VOLUME_DIR = config.REPO_ROOT / "data" / "processed" / config.SAMPLE_NAME
+
+# Optional visualization downsampling (2, 4, or 8 recommended)
+DOWNSAMPLE = 4
+
+# Maximum number of boundary / defect points to render
+MAX_POINTS = 50_000
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def load_volume(folder: Path) -> np.ndarray:
+    files = sorted(folder.glob("*.tif"))
     if not files:
         raise RuntimeError(f"No TIFF files found in {folder}")
     return np.stack([tiff.imread(f).astype(np.float32) for f in files], axis=0)
 
 
-# ── Load volume (FULL resolution first) ───────────────────────────────────
-print("Loading TIFF stack (full resolution) ...")
-volume_full = load_stack(VOLUME_DIR)
+# ---------------------------------------------------------------------------
+# Load volume
+# ---------------------------------------------------------------------------
+
+print("Loading preprocessed XCT volume (full resolution)...")
+volume_full = load_volume(VOLUME_DIR)
 print(f"  Volume shape: {volume_full.shape}")
 
-# Optional light smoothing (helps boundary stability)
+# Optional smoothing improves surface stability
 volume_smooth = gaussian_filter(volume_full, sigma=0.5)
 
-# ── Thresholding (FULL resolution) ────────────────────────────────────────
-print("Computing global Otsu threshold ...")
-thresh = threshold_otsu(volume_smooth)
-print(f"  Otsu threshold = {thresh:.4f}")
 
-# Air mask (XCT: air = darker)
+# ---------------------------------------------------------------------------
+# Air–solid thresholding (global, visualization purpose)
+# ---------------------------------------------------------------------------
+
+print("Computing global Otsu threshold (visualization only)...")
+thresh = np.mean(volume_smooth)
+print(f"  Using threshold = {thresh:.2f}")
+
 air_mask = volume_smooth < thresh
 
-# Extract only the air–solid INTERFACE
-print("Extracting air–solid boundary ...")
+
+# Extract air–solid interface
+print("Extracting air–solid boundary...")
 boundary_mask = air_mask ^ binary_erosion(air_mask)
 
-# ── Downsample for visualization ──────────────────────────────────────────
-print(f"Downsampling by factor {DOWNSAMPLE} for visualization ...")
 
+# ---------------------------------------------------------------------------
+# Downsample for visualization
+# ---------------------------------------------------------------------------
+
+print(f"Downsampling by factor {DOWNSAMPLE}...")
 volume = volume_smooth[
     ::DOWNSAMPLE, ::DOWNSAMPLE, ::DOWNSAMPLE
 ]
-
 boundary_mask = boundary_mask[
     ::DOWNSAMPLE, ::DOWNSAMPLE, ::DOWNSAMPLE
 ]
 
-print(f"  Downsampled volume shape: {volume.shape}")
+print(f"  Downsampled shape: {volume.shape}")
 
-# ── Extract boundary points ───────────────────────────────────────────────
+
+# ---------------------------------------------------------------------------
+# Extract boundary points
+# ---------------------------------------------------------------------------
+
 z, y, x = np.where(boundary_mask)
 
-# Subsample for performance
 if len(z) > MAX_POINTS:
     idx = np.random.choice(len(z), MAX_POINTS, replace=False)
     z, y, x = z[idx], y[idx], x[idx]
 
 print(f"  Boundary points to render: {len(z):,}")
 
-# ── Build visualization ───────────────────────────────────────────────────
-print("Building 3D visualisation ...")
+
+# ---------------------------------------------------------------------------
+# Build Plotly visualization
+# ---------------------------------------------------------------------------
+
+print("Building 3D visualization...")
 
 fig = go.Figure()
 
@@ -84,7 +113,7 @@ fig.add_trace(go.Isosurface(
     isomin=thresh * 0.98,
     isomax=thresh * 1.02,
     surface_count=1,
-    opacity=0.25,                        # translucent
+    opacity=0.25,
     colorscale="Gray",
     caps=dict(x_show=False, y_show=False, z_show=False),
     showscale=False,
@@ -97,7 +126,7 @@ fig.add_trace(go.Scatter3d(
     mode="markers",
     marker=dict(
         size=2,
-        color=z,                        # depth colouring
+        color=z,
         colorscale="Reds",
         opacity=0.85
     ),
@@ -128,8 +157,14 @@ fig.update_layout(
     legend=dict(bgcolor="black")
 )
 
-# ── Save output ───────────────────────────────────────────────────────────
-out_file = "xct_surface_with_points.html"
+
+# ---------------------------------------------------------------------------
+# Save output
+# ---------------------------------------------------------------------------
+
+out_file = config.REPO_ROOT / "results" / "figures" / "xct_surface_with_points.html"
+out_file.parent.mkdir(parents=True, exist_ok=True)
+
 fig.write_html(out_file)
 print(f"\nSaved → {out_file}")
-print("Open it in a browser to interact with the 3D model.")
+print("Open the file in a browser to interact with the 3D model.")
