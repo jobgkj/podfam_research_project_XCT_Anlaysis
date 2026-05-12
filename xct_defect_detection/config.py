@@ -8,22 +8,54 @@ Change values here only; do not hardcode elsewhere.
 """
 
 import os
+# ---------------------------------------------------------------------------
+# Paths for Storage and Usage
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+# Repository root
+REPO_ROOT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
-# Paths for Storag and Usage
+# Raw and processed data
 # ---------------------------------------------------------------------------
-NIST_VOL_DIR    = "data/nist/volumes"
-NIST_MASK_DIR   = "data/nist/masks"
-PODFAM_VOL_DIR  = "data/podfam/volumes"
-PODFAM_MASK_DIR = "data/podfam/masks"
 
-CKPT_DIR        = "checkpoints"
-MLFLOW_URI      = "mlruns"
+RAW_DATA_DIR      = REPO_ROOT / "data" / "raw"
+PROCESSED_DATA_DIR = REPO_ROOT / "data" / "processed"
 
-os.makedirs(NIST_MASK_DIR,   exist_ok=True)
-os.makedirs(PODFAM_MASK_DIR, exist_ok=True)
-os.makedirs(CKPT_DIR,        exist_ok=True)
+# ---------------------------------------------------------------------------
+# Segmentation mask outputs
+# ---------------------------------------------------------------------------
 
+OTSU_MASK_DIR     = REPO_ROOT / "results" / "masks" / "otsu"
+YEN_MASK_DIR      = REPO_ROOT / "results" / "masks" / "yen"
+BERNSEN_MASK_DIR  = REPO_ROOT / "results" / "masks" / "bernsen"
+
+# ---------------------------------------------------------------------------
+# Artifacts and logs
+# ---------------------------------------------------------------------------
+
+CKPT_DIR          = REPO_ROOT / "artifacts"        # model checkpoints
+FIGURES_DIR       = REPO_ROOT / "results" / "figures"
+METRICS_DIR       = REPO_ROOT / "results" / "metrics"
+
+# ---------------------------------------------------------------------------
+# Ensure required directories exist
+# ---------------------------------------------------------------------------
+
+RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+OTSU_MASK_DIR.mkdir(parents=True, exist_ok=True)
+YEN_MASK_DIR.mkdir(parents=True, exist_ok=True)
+BERNSEN_MASK_DIR.mkdir(parents=True, exist_ok=True)
+
+CKPT_DIR.mkdir(parents=True, exist_ok=True)
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+METRICS_DIR.mkdir(parents=True, exist_ok=True)
+
+#########################################################################################################################
 # ---------------------------------------------------------------------------
 # Preprocessing
 # ---------------------------------------------------------------------------
