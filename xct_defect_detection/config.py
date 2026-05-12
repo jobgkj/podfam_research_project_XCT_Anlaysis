@@ -204,3 +204,10 @@ ACCEPTANCE_REC  = 0.80
 # =============================================================================
 
 MLFLOW_EXPERIMENT = "XCT_Defect_Detection"
+# config.py
+
+# Number of pixels to erode from the detected boundary
+SAMPLE_MASK_EROSION_RADIUS = 5   # adjust based on your dataset
+
+# Intensity threshold to classify air vs. sample
+SAMPLE_MASK_AIR_THRESHOLD = 30   # typical range: 20–50 for uint8 XCT slices

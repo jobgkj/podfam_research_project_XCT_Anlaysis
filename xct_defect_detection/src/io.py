@@ -16,7 +16,9 @@ Design goals
 - 2D slice-wise only
 - Constant memory usage (no full volume loading)
 - GitHub-safe (no raw data committed)
-- GUI-friendly: all parameters readable from config, overridable per call
+- Config-driven defaults, all overridable per call
+- GUI-friendly: get_default_params() for field pre-population
+- Sample mask support: removes air background from thresholding
 =============================================================================
 """
 
@@ -27,29 +29,14 @@ import numpy as np
 import tifffile as tiff
 
 from src.thresholding import otsu, yen, bernsen
+from src.sample_mask import detect_sample_mask_stack, build_circle_mask
 import config
 
 
-# -----------------------------------------------------------------------------
-def _normalize_to_uint8(img: np.ndarray) -> np.ndarray:
-    """
-    Normalize a 2D image to uint8 [0, 255].
+# =============================================================================
+# GUI helper
+# =============================================================================
 
-    Returns a zero image if the intensity range is zero
-    (blank / empty slice) instead of raising.
-    """
-    img = img.astype(np.float32)
-    vmin, vmax = img.min(), img.max()
-
-    if vmax <= vmin:
-        warnings.warn("Slice has zero intensity range — returning blank mask.")
-        return np.zeros_like(img, dtype=np.uint8)
-
-    img = (img - vmin) / (vmax - vmin)
-    return (255.0 * img).clip(0, 255).astype(np.uint8)
-
-
-# -----------------------------------------------------------------------------
 def get_default_params() -> dict:
     """
     Return current default parameters from config.
@@ -60,37 +47,69 @@ def get_default_params() -> dict:
     Returns
     -------
     dict with keys:
-        repo_root       : Path
-        sample_name     : str
-        use_processed   : bool
-        bernsen_radius  : int
-        bernsen_dct     : int
+        repo_root            : Path
+        sample_name          : str
+        use_processed        : bool
+        bernsen_radius       : int
+        bernsen_dct          : int
+        use_sample_mask      : bool
     """
     return {
-        "repo_root":      config.REPO_ROOT,
-        "sample_name":    config.SAMPLE_NAME,
-        "use_processed":  True,
-        "bernsen_radius": config.BERNSEN_RADIUS,
-        "bernsen_dct":    config.BERNSEN_DCT,
+        "repo_root":        config.REPO_ROOT,
+        "sample_name":      config.SAMPLE_NAME,
+        "use_processed":    True,
+        "bernsen_radius":   config.BERNSEN_RADIUS,
+        "bernsen_dct":      config.BERNSEN_DCT,
+        "use_sample_mask":  config.USE_SAMPLE_MASK,
     }
 
 
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Internal helpers
+# =============================================================================
+
+def _normalize_to_uint8(img: np.ndarray) -> np.ndarray:
+    """
+    Normalize a 2D image to uint8 [0, 255].
+
+    Returns a zero image with a warning if the intensity range is zero.
+    """
+    img  = img.astype(np.float32)
+    vmin, vmax = img.min(), img.max()
+
+    if vmax <= vmin:
+        warnings.warn("Slice has zero intensity range — returning blank slice.")
+        return np.zeros(img.shape, dtype=np.uint8)
+
+    img = (img - vmin) / (vmax - vmin)
+    return (255.0 * img).clip(0, 255).astype(np.uint8)
+
+
+# =============================================================================
+# Main entry point
+# =============================================================================
+
 def load_and_generate_masks(
-    repo_root:         "Path | str" = None,
-    sample_name:       str          = None,
-    use_processed:     bool         = True,
-    bernsen_radius:    int          = None,
-    bernsen_dct:       int          = None,
-    progress_callback: callable     = None,
+    repo_root:         "Path | str"  = None,
+    sample_name:       str           = None,
+    use_processed:     bool          = True,
+    bernsen_radius:    int           = None,
+    bernsen_dct:       int           = None,
+    use_sample_mask:   bool          = None,
+    progress_callback: callable      = None,
 ) -> dict:
     """
     Stream 2D XCT slices from disk, generate segmentation
     masks, and save them to disk.
 
     All parameters fall back to config.py values if not supplied.
-    This makes the function safe to call from a GUI where the user
-    may only change a subset of parameters.
+
+    Sample mask
+    -----------
+    When use_sample_mask=True (default), a circular sample boundary
+    is detected automatically and applied to all three thresholding
+    methods. This prevents air background pixels from being classified
+    as pores, fixing over-segmentation in low-porosity samples.
 
     Parameters
     ----------
@@ -104,16 +123,17 @@ def load_and_generate_masks(
         If True  → read from data/processed/<sample_name>/  (default)
         If False → read from data/raw/<sample_name>/
     bernsen_radius : int, optional
-        Radius (in pixels) for Bernsen local thresholding.
+        Radius for Bernsen local thresholding.
         Defaults to config.BERNSEN_RADIUS.
     bernsen_dct : int, optional
-        Contrast threshold (DCT) for Bernsen method.
-        Defaults to config.BERNSEN_DCT.
+        Fixed DCT override. If None, auto-computed per slice.
+        Defaults to None (auto-compute).
+    use_sample_mask : bool, optional
+        Apply circular sample mask to exclude air background.
+        Defaults to config.USE_SAMPLE_MASK.
     progress_callback : callable, optional
-        Optional function called on each slice with (current, total, filename).
-        Use this to update a GUI progress bar.
-        Example:
-            progress_callback=lambda current, total, fname: print(f"{current}/{total}")
+        Called each slice with (current, total, filename).
+        Use to update a GUI progress bar.
 
     Returns
     -------
@@ -122,24 +142,16 @@ def load_and_generate_masks(
         processed : int  — slices successfully processed
         skipped   : int  — slices skipped due to errors
         mask_dir  : Path — root output directory for this sample's masks
-
-    Output
-    ------
-    Masks are written to:
-        data/masks/<sample_name>/otsu/<slice>.tif
-        data/masks/<sample_name>/yen/<slice>.tif
-        data/masks/<sample_name>/bernsen/<slice>.tif
-
-    Output filenames are identical to the input filenames.
     """
 
     # ------------------------------------------------------------------
-    # Fall back to config values for any unset parameters
+    # Fall back to config for any unset parameters
     # ------------------------------------------------------------------
-    repo_root      = Path(repo_root) if repo_root      is not None else config.REPO_ROOT
-    sample_name    = sample_name     if sample_name     is not None else config.SAMPLE_NAME
-    bernsen_radius = bernsen_radius  if bernsen_radius  is not None else config.BERNSEN_RADIUS
-    bernsen_dct    = bernsen_dct     if bernsen_dct     is not None else config.BERNSEN_DCT
+    repo_root        = Path(repo_root)      if repo_root        is not None else config.REPO_ROOT
+    sample_name      = sample_name          if sample_name       is not None else config.SAMPLE_NAME
+    bernsen_radius   = bernsen_radius       if bernsen_radius    is not None else config.BERNSEN_RADIUS
+    use_sample_mask  = use_sample_mask      if use_sample_mask   is not None else config.USE_SAMPLE_MASK
+    # bernsen_dct left as None → auto-computed per slice in bernsen()
 
     # ------------------------------------------------------------------
     # Input directory
@@ -179,17 +191,38 @@ def load_and_generate_masks(
     total   = len(tiff_files)
     skipped = 0
 
-    print(f"Found {total} slices in {input_dir}")
+    print(f"  Found {total} slices in {input_dir}")
+
+    # ------------------------------------------------------------------
+    # Detect sample mask (once per stack — consistent circle)
+    # ------------------------------------------------------------------
+    stack_cx = stack_cy = stack_radius = None
+
+    if use_sample_mask:
+        print("  Detecting sample boundary (circular mask) ...")
+        try:
+            stack_cx, stack_cy, stack_radius, _ = detect_sample_mask_stack(
+                tiff_files,
+                n_sample_slices=5,
+            )
+            print(
+                f"  Sample circle: centre=({stack_cx:.1f}, {stack_cy:.1f}), "
+                f"radius={stack_radius:.1f}px"
+            )
+        except Exception as e:
+            warnings.warn(
+                f"  Sample mask detection failed: {e} — "
+                "continuing without sample mask."
+            )
+            use_sample_mask = False
 
     # ------------------------------------------------------------------
     # Stream slices one-by-one
     # ------------------------------------------------------------------
     for idx, f in enumerate(tiff_files):
 
-        # Console progress
         print(f"  Processing {idx + 1}/{total}: {f.name}", end="\r")
 
-        # GUI progress bar hook
         if progress_callback is not None:
             progress_callback(idx + 1, total, f.name)
 
@@ -201,7 +234,6 @@ def load_and_generate_masks(
             skipped += 1
             continue
 
-        # Validate shape
         if img.ndim != 2:
             warnings.warn(
                 f"Skipping {f.name} — not a 2D slice (shape={img.shape})"
@@ -209,15 +241,31 @@ def load_and_generate_masks(
             skipped += 1
             continue
 
-        # Normalize to uint8 if needed
         if img.dtype != np.uint8:
             img = _normalize_to_uint8(img)
 
-        # Generate masks
+        # Build sample mask for this slice
+        sample_mask = None
+        if use_sample_mask and stack_cx is not None:
+            h, w = img.shape
+            sample_mask = build_circle_mask(
+                h, w,
+                cx=stack_cx,
+                cy=stack_cy,
+                radius=stack_radius,
+                erosion_radius=config.SAMPLE_MASK_EROSION_RADIUS,
+            )
+
+        # Generate masks — pass sample_mask to exclude air background
         masks = {
-            "otsu":    otsu(img),
-            "yen":     yen(img),
-            "bernsen": bernsen(img, radius=bernsen_radius, DCT=bernsen_dct),
+            "otsu":    otsu(img,     sample_mask=sample_mask),
+            "yen":     yen(img,      sample_mask=sample_mask),
+            "bernsen": bernsen(
+                img,
+                radius=bernsen_radius,
+                DCT=bernsen_dct,          # None = auto-compute per slice
+                sample_mask=sample_mask,
+            ),
         }
 
         # Save — preserve original filename exactly
@@ -232,7 +280,7 @@ def load_and_generate_masks(
     # ------------------------------------------------------------------
     processed = total - skipped
 
-    print(f"\nDone — {processed}/{total} slices processed.")
+    print(f"\n  Done — {processed}/{total} slices processed.")
     if skipped:
         print(f"  Skipped: {skipped} slice(s) — check warnings above.")
     print(f"  Masks saved to: {mask_root}")

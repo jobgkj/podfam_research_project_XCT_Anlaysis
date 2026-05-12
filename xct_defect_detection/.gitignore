@@ -31,7 +31,7 @@ Thumbs.db
 *.vtk
 *.h5
 *.hdf5
-
+*.png
 # =========================
 # Data folders (never commit)
 # =========================
