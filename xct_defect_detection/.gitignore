@@ -1,0 +1,51 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+env/
+
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# =========================
+# XCT / Imaging Data
+# =========================
+*.tif
+*.tiff
+*.raw
+*.nii
+*.nii.gz
+*.mhd
+*.mha
+*.vgi
+*.vtk
+*.h5
+*.hdf5
+
+# =========================
+# Data folders (never commit)
+# =========================
+data/
+data/**
+results/masks/
+
+# =========================
+# Large intermediate outputs
+# =========================
+*.npy
+*.npz
+
+# =========================
+# Logs
+# =========================
+*.log
