@@ -18,7 +18,7 @@ Run from project root:
     python thesis_analysis.py
 =============================================================================
 """
-
+from pathlib import Path
 import time
 import csv
 import warnings
