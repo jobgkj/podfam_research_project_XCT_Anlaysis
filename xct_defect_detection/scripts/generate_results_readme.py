@@ -18,6 +18,13 @@ Run from project root:
     python thesis_analysis.py
 =============================================================================
 """
+import sys
+from pathlib import Path
+
+# Add project root to path so config.py can be found
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import config
 from pathlib import Path
 import time
 import csv
