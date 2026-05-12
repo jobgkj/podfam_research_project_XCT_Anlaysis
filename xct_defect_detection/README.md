@@ -1,187 +1,147 @@
 # XCT Defect Segmentation and Evaluation
-
 ## for Additively Manufactured Metal Parts
 
 ---
 
-##  Project Overview
+## Project Overview
 
-This document describes the complete processing, training, and evaluation
-workflow implemented in this repository for automated defect segmentation
-in industrial X-ray Computed Tomography (XCT) data of additively manufactured
-metal components.
+This repository implements a **reproducible, physics-informed workflow**
+for defect segmentation and evaluation in **industrial X-ray Computed
+Tomography (XCT)** data of additively manufactured metal components.
 
-The same data, preprocessing steps, and pseudo-labels are used to train
-both 2D and 3D U-Net models, enabling a fair and controlled comparison
-between slice-wise and volumetric learning.
+The pipeline combines **classical image processing–based segmentation**
+(global and local thresholding) with **deep learning–based defect
+segmentation**, enabling:
 
----------------------------------------------------------------------
-STEP 1 — RAW XCT INPUT
----------------------------------------------------------------------
+- Objective comparison of **global vs local thresholding methods**
+- Generation of **weak pseudo-labels** for supervised learning
+- Fair benchmarking between **2D and 3D U-Net architectures**
+- Quantitative porosity and pore morphology analysis
 
-Raw XCT data are provided as ordered TIFF slice stacks:
+Raw XCT data are never committed to the repository.
 
-data/tiff_stack/
+---
+
+## STEP 1 — RAW XCT INPUT
+
+Input XCT data are provided as ordered TIFF slice stacks:
+data/raw/sample_01/
+slice_0000.tif
+slice_0001.tif
+slice_0002.tif
+...
+Slices **must be named such that alphabetical ordering corresponds to the
+physical build (Z) direction**.
+
+---
+
+## STEP 2 — XCT PREPROCESSING
+
+Run preprocessing:
+
+```bash
+python scripts/run_preprocess.py
+Preprocessing operations
+The preprocessing pipeline is designed specifically for metal XCT data
+and applies the following operations in sequence:
+
+
+3D median filtering (3×3×3)
+
+Suppresses speckle noise while preserving sharp defect boundaries
+
+
+
+2D Non-Local Means (NLM) filtering
+
+Noise reduction with edge preservation
+Noise level estimated automatically from the data
+
+
+
+The output is a normalized 8‑bit volume saved slice‑wise:
+data/processed/sample_01/
     slice_0000.tif
     slice_0001.tif
-    slice_0002.tif
     ...
+This preprocessed data is the single shared input source for all
+thresholding, comparison, and learning stages.
 
-Slices must be named such that alphabetical ordering corresponds to
-the physical Z-order of the volume.
+STEP 3 — THRESHOLDING METHOD COMPARISON
+Three binary segmentation approaches are applied independently to the
+same preprocessed data:
+1. Global Threshold — Otsu
 
----------------------------------------------------------------------
-STEP 2 — XCT PREPROCESSING
----------------------------------------------------------------------
+Histogram-based global threshold
+Often misses low-contrast pores
 
-The raw TIFF stack is preprocessed using an XCT-specific pipeline
-designed for metal additive manufacturing data.
+2. Global Threshold — Yen
 
-Run:
-    python run_preprocess.py
+Entropy-based threshold
+Tends to over-segment and introduce edge artifacts
 
-The preprocessing pipeline applies the following operations in sequence:
+3. Local Threshold — Bernsen
 
-1. Percentile-based intensity normalization
-   - Robust to metal artefacts and extreme outliers
+Adaptive local threshold using sliding windows
+Contrast threshold (DCT) computed automatically from matrix noise
+Robust to non-uniform gray-scale intensities
 
-2. Beam hardening correction
-   - Polynomial correction of systematic intensity gradients
+These methods are evaluated against the original grayscale data to
+quantify segmentation bias.
+Run comparison:
+python scripts/compare_methods.py
+Generated outputs:
+results/masks/
+    otsu/
+    yen/
+    bernsen/
 
-3. Ring artefact suppression
-   - Radial profile correction per slice
+results/metrics/
+    global_metrics.csv
+    pore_stats.csv
+STEP 4 — PSEUDO-LABEL GENERATION (WEAK SUPERVISION)
+Bernsen’s local thresholding results are used to generate pseudo-labels
+for training deep learning models.
+Post-processing includes:
 
-4. Non-local means denoising
-   - Noise suppression while preserving defect boundaries
+Morphological opening and closing
+Removal of small connected components
 
-The output is a float32 volume normalized to the range [0, 1], saved
-slice-wise:
-
-data/tiff_output/
-    slice_0000.tif
-    slice_0001.tif
+Cached pseudo-labels:
+data/masks/sample_01/
+    bernsen_mask_0000.tif
+    bernsen_mask_0001.tif
     ...
-
-These preprocessed slices form the single shared input source for all
-subsequent stages.
-
----------------------------------------------------------------------
-STEP 3 — PSEUDO-LABEL GENERATION (WEAK SUPERVISION)
----------------------------------------------------------------------
-
-Since voxel-accurate ground truth annotations are typically unavailable,
-binary pseudo-label masks are generated automatically.
-
-The pseudo-label generation pipeline consists of:
-
-1. Global Otsu thresholding
-   - Defects correspond to low X-ray attenuation regions
-
-2. Morphological cleaning
-   - Opening removes isolated noise
-   - Closing fills small holes in defect regions
-
-3. Connected-component filtering
-   - Removal of components smaller than a minimum voxel count
-
-Pseudo-labels are generated once and cached to disk:
-
-    python data/pseudo_labels.py
-
-Resulting files:
-
-data/masks/
-    volume_01_mask.tif
-    volume_02_mask.tif
+data/masks/sample_01/
+    bernsen_mask_0000.tif
+    bernsen_mask_0001.tif
     ...
-
-These masks are weak supervision targets, but provide sufficient
-structural guidance to train U-Net models that generalize better
-than thresholding alone.
-
----------------------------------------------------------------------
-STEP 4 — DATASET CONSTRUCTION (SHARED FOR 2D AND 3D)
----------------------------------------------------------------------
-
-The same preprocessed volumes and pseudo-label masks are used for both
-2D and 3D training. No preprocessing, normalization, or labeling differs
-between the models.
-
-Two dataset strategies are implemented:
-
-2D DATASET (SLICE-WISE)
-----------------------
-- Each XCT slice is treated independently
-- 2D patches are extracted using a sliding window
-- Foreground/background stratified sampling addresses severe class imbalance
-- Online 2D augmentation is applied during training
-
-This dataset is used to train the 2D U-Net baseline model.
-
-3D DATASET (PATCH-WISE)
-----------------------
-- Random 3D patches (D, H, W) are extracted from the full volume
-- The same 2D augmentation is applied slice-wise within each 3D patch
-- No augmentation is applied across the Z dimension
-
-This approach preserves volumetric consistency while avoiding
-unphysical 3D warping.
-
-Both datasets use identical data and pseudo-labels, enabling a fair
-comparison between 2D and 3D learning approaches.
-
----------------------------------------------------------------------
-STEP 5 — MODEL TRAINING
----------------------------------------------------------------------
-
-2D U-NET TRAINING
-----------------
-- Slice-wise training
-- Input shape: (B, 1, H, W)
-- Inference is performed slice-by-slice and stacked into a 3D volume
-
-3D U-NET TRAINING
-----------------
-- Patch-based volumetric training
-- Input shape: (B, 1, D, H, W)
-- Inference is performed using a sliding-window strategy
-
-Common training configuration:
-- Loss function: Dice + Binary Cross-Entropy
-- Optimizer: Adam or AdamW
-- Batch size: small (typically 1–4 due to GPU memory constraints)
-
-Training commands:
-    python pipeline.py
-
+python pipeline.py
 Saved models:
 artifacts/
     model_2d.pt
     model_3d.pt
-
----------------------------------------------------------------------
-STEP 6 — EVALUATION AND VISUALIZATION
----------------------------------------------------------------------
-
-Models are evaluated both quantitatively and qualitatively.
-
+STEP 7 — EVALUATION AND VISUALIZATION
 Quantitative metrics:
-- Dice Similarity Coefficient (DSC)
-- Intersection over Union (IoU)
+
+Dice Similarity Coefficient (DSC)
+Intersection over Union (IoU)
+Porosity and pore size distributions
 
 Qualitative analysis:
-- Slice-wise overlay visualization
-- Interactive 3D defect surface rendering
 
-Evaluation command:
-    python evaluate_2d_vs_3d.py
+Grayscale + mask overlays
+Slice-by-slice comparison figures
+3D defect visualization
 
-This enables direct and reproducible comparison of slice-wise (2D)
-and volumetric (3D) defect segmentation performance.
+Evaluation:
+python evaluate_2d_vs_3d.py
+Notes on Reproducibility
 
----------------------------------------------------------------------
-END OF PROCEDURE
----------------------------------------------------------------------
+Threshold parameters are derived from the data itself
+No fixed segmentation parameters are reused across datasets
+Raw XCT data are excluded from version control
+
+
 Author: Job George Konnoth Joseph
-
 Contact: job-george.konnoth-joseph@student.hv.se
