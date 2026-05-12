@@ -1,14 +1,13 @@
 """
-thresholding.py — Classical thresholding methods for XCT defect segmentation
-
-This module implements global and local thresholding algorithms
-to convert a preprocessed 2D XCT slice into a binary defect mask.
+thresholding.py — Thresholding methods for XCT defect segmentation
+with explicit sample masking support.
 
 Conventions:
-- Input image must be uint8, shape (H, W)
-- Output mask is uint8, shape (H, W)
-- 1 = solid material
-- 0 = pore / defect
+- Input image: uint8, shape (H, W)
+- sample_mask (optional): uint8, shape (H, W), 1 = inside sample, 0 = outside
+- Output mask: uint8, shape (H, W)
+  - 1 = solid material
+  - 0 = pore / defect
 """
 
 import numpy as np
@@ -18,79 +17,66 @@ from skimage.morphology import disk
 
 
 # ---------------------------------------------------------------------------
-# Global thresholding methods
+# Helper
 # ---------------------------------------------------------------------------
-
-def otsu(img: np.ndarray) -> np.ndarray:
+def _apply_sample_mask(mask: np.ndarray, sample_mask: np.ndarray | None):
     """
-    Global Otsu thresholding.
+    Force outside-sample pixels to solid (1).
+    """
+    if sample_mask is None:
+        return mask
 
-    Parameters
-    ----------
-    img : np.ndarray
-        Preprocessed uint8 image.
+    if sample_mask.shape != mask.shape:
+        raise ValueError("sample_mask must have same shape as image/mask")
 
-    Returns
-    -------
-    np.ndarray
-        Binary uint8 mask (1 = solid, 0 = pore).
+    if sample_mask.dtype != np.uint8:
+        raise TypeError("sample_mask must be uint8")
+
+    # Outside sample → force solid
+    mask[sample_mask == 0] = 1
+    return mask
+
+
+# ---------------------------------------------------------------------------
+# Global thresholding
+# ---------------------------------------------------------------------------
+def otsu(img: np.ndarray, sample_mask: np.ndarray | None = None) -> np.ndarray:
+    """
+    Global Otsu thresholding with optional sample masking.
     """
     if img.dtype != np.uint8:
         raise TypeError("Otsu thresholding expects uint8 input")
 
     t = threshold_otsu(img)
-    return (img > t).astype(np.uint8)
+    mask = (img > t).astype(np.uint8)
+
+    return _apply_sample_mask(mask, sample_mask)
 
 
-def yen(img: np.ndarray) -> np.ndarray:
+def yen(img: np.ndarray, sample_mask: np.ndarray | None = None) -> np.ndarray:
     """
-    Global Yen entropy-based thresholding.
-
-    Parameters
-    ----------
-    img : np.ndarray
-        Preprocessed uint8 image.
-
-    Returns
-    -------
-    np.ndarray
-        Binary uint8 mask (1 = solid, 0 = pore).
+    Global Yen entropy thresholding with optional sample masking.
     """
     if img.dtype != np.uint8:
         raise TypeError("Yen thresholding expects uint8 input")
 
     t = threshold_yen(img)
-    return (img > t).astype(np.uint8)
+    mask = (img > t).astype(np.uint8)
+
+    return _apply_sample_mask(mask, sample_mask)
 
 
 # ---------------------------------------------------------------------------
-# Local thresholding method
+# Local thresholding (Bernsen)
 # ---------------------------------------------------------------------------
-
 def bernsen(
     img: np.ndarray,
     radius: int = 5,
     DCT: int = 15,
+    sample_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """
-    Bernsen local thresholding.
-
-    For each pixel, a local circular window is used to compute
-    the local contrast and mid-gray value.
-
-    Parameters
-    ----------
-    img : np.ndarray
-        Preprocessed uint8 image.
-    radius : int
-        Radius of the local window (in pixels).
-    DCT : int
-        Local contrast threshold.
-
-    Returns
-    -------
-    np.ndarray
-        Binary uint8 mask (1 = solid, 0 = pore).
+    Bernsen local thresholding with optional sample masking.
     """
     if img.dtype != np.uint8:
         raise TypeError("Bernsen thresholding expects uint8 input")
@@ -106,20 +92,15 @@ def bernsen(
     local_min = minimum(img, se)
     local_max = maximum(img, se)
 
-    # Local contrast
     LCT = local_max - local_min
-
-    # Local midpoint
     Imid = (local_max + local_min) / 2.0
 
-    out = np.zeros_like(img, dtype=np.uint8)
+    mask = np.zeros_like(img, dtype=np.uint8)
 
-    # Low contrast region: fallback to fixed threshold
     low_contrast = LCT < DCT
-    out[low_contrast] = img[low_contrast] > 128
+    mask[low_contrast] = img[low_contrast] > 128
 
-    # High contrast region: local threshold
     high_contrast = ~low_contrast
-    out[high_contrast] = img[high_contrast] > Imid[high_contrast]
+    mask[high_contrast] = img[high_contrast] > Imid[high_contrast]
 
-    return out.astype(np.uint8)
+    return _apply_sample_mask(mask, sample_mask)
